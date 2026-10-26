@@ -3035,6 +3035,7 @@ def polconvert(
 
                                 printMsg(pmsg)
                                 pfile.write(pmsg)
+                                pfile.close()
 
                                 printMsg(
                                     "wrote FRINGE.PEAKS_IF%i-ANT%i.dat" % (pli, ant1)
