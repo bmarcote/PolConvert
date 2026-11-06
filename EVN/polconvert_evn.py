@@ -3,7 +3,7 @@
 polarization instead of circular one. This is a wrapper for the PolConvert-standalone program that
 reads the required parameters from an input file and is meant to be used with EVN data.
 
-Version: 2.2
+Version: 2.3 (6 Nov 2026)
 Date: March 2023
 Written by Benito Marcote (marcote@jive.eu)
 """
@@ -19,7 +19,7 @@ from concurrent import futures
 from collections import defaultdict
 import numpy as np
 from astropy.io import fits
-from evn_support import find_idi_with_time as find_idi
+from . import find_idi_with_time as find_idi
 # tomli was introduced in the standard library as tomllib in Python 3.11
 try:
     import tomllib
@@ -27,12 +27,13 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 
-__version__ = '2.2'
+__version__ = '2.3'
 
 
 def main(ref_idi, idi_files, linear_antennas, ref_antenna, exclude_antennas, exclude_baselines, do_ifs,
-         time_range, chan_avg=1, time_avg=20, solve_weight=0.0, solve_amp=True, to_compute=True, to_apply=True,
-         suffix='.PCONVERT', logdir='polconvert_logs', **kwargs):
+         time_range, out_gainfile: str, gainfiles: list[str], chan_avg=1, time_avg=20, solve_weight=0.0,
+         solve_amp=True, to_compute=True, to_apply=True, suffix='.PCONVERT', logdir='polconvert_logs',
+         useDelays: bool = False, useRates: bool = False, **kwargs):
     """Runs PolConvert on the given project.
     Inputs:
         - ref_idi : str
@@ -69,6 +70,14 @@ def main(ref_idi, idi_files, linear_antennas, ref_antenna, exclude_antennas, exc
             If empty, it will overwrite the original files (not recommended).
         - logdir : str  [default = 'polconvert_logs']
             Specifies the folder that will be created to keep the log files from this run.
+        - out_gainfile : str
+            The filename that will be writen containing the computed gains for the telescopes (if to_compute is True).
+        - gainfiles : list[str]
+            The file names that will be used to apply the conversion (if to_apply is True).
+        - useDelays : bool [default = False]
+            Fit the delays before comuting the solution. False by default to keep it consistent with prior versions.
+        - useRates: bool [default = False]
+            Fit the rates before comuting the solution. False by default to keep it consistent with prior versions.
         - **kwargs
             Parameters that PolConvert() accepts. Check its help.
     """
@@ -84,7 +93,7 @@ def main(ref_idi, idi_files, linear_antennas, ref_antenna, exclude_antennas, exc
 
     # Files created by PolConvert, always in CWD
     _TEMP_FILES = ('CONVERSION.MATRIX', 'FRINGE.PEAKS', 'FRINGE.PLOTS', 'POLCONVERT.FRINGE', 'PolConvert.log',
-                   'PolConvert.XYGains.dat', 'PolGainSolve.log', 'PolConvert_standalone.last',
+                   'PolConvert.XYGains.dat', 'PolGainSolve.log', 'PolConvert_standalone.last', 'PolConvert.GainSolve.log',
                    f"Cross-Gains_{args['inputs']['ref_idi'].split('.')[0]}.png")
     # If exists, remove all created output files (but the IDIs) from prior runs
     if args['options']['to_compute']:
@@ -114,9 +123,9 @@ def main(ref_idi, idi_files, linear_antennas, ref_antenna, exclude_antennas, exc
                                      excludeAnts=exclude_antennas,
                                      excludeBaselines=exclude_baselines, doIF=do_ifs, plotIF=do_ifs, doTest=True,
                                      saveArgs=True, plotRange=time_range, Range=time_range, solveAmp=solve_amp,
-                                     XYadd=XYadd, XYratio=XYratio, **kwargs)
+                                     XYadd=XYadd, XYratio=XYratio, useDelays=useDelays, useRates=useRates, **kwargs)
 
-            with open(path / 'polconvert.gains', 'wb') as gain_file:
+            with open(path / out_gainfile, 'wb') as gain_file:
                 pk.dump(gains, gain_file)
 
             for lant in linear_antennas:
@@ -128,7 +137,8 @@ def main(ref_idi, idi_files, linear_antennas, ref_antenna, exclude_antennas, exc
                                  plotAnt=ref_antenna, doSolve=-1, solint=[chan_avg, time_avg],
                                  excludeAnts=exclude_antennas, excludeBaselines=exclude_baselines,
                                  doIF=do_ifs, plotIF=do_ifs, doTest=True, plotRange=time_range,
-                                 Range=time_range, solveAmp=solve_amp, XYadd=XYadd, XYratio=XYratio, **kwargs)
+                                 Range=time_range, solveAmp=solve_amp, XYadd=XYadd, XYratio=XYratio,
+                                 useDelays=useDelays, useRates=useRates, **kwargs)
         finally:
             # Move all created output files (but the IDIs) into the expected log folder
             for a_path in _TEMP_FILES:
@@ -145,11 +155,12 @@ def main(ref_idi, idi_files, linear_antennas, ref_antenna, exclude_antennas, exc
             # The solutions must have been recorded from a previous run in the file
             # Otherwise they should already be available in the XYadd/XYratio dicts.
             # with open(path / 'PolConvert.XYGains.dat', 'rb') as gain_file:
-            with open(path / 'polconvert.gains', 'rb') as gain_file:
-                gains = pk.load(gain_file)
-                for lant in linear_antennas:
-                    XYadd[lant] = gains['XYadd'][lant]
-                    XYratio[lant] = gains['XYratio'][lant]
+            for gain_file_path in gainfiles:
+                with open(path / 'polconvert.gains', 'rb') as gain_file:
+                    gains = pk.load(gain_file)
+                    for lant in linear_antennas:
+                        XYadd[lant] = gains['XYadd'][lant]
+                        XYratio[lant] = gains['XYratio'][lant]
 
         for an_idi in idi_files:
             an_idi_path = Path(an_idi + suffix)
@@ -316,7 +327,7 @@ if __name__ == '__main__':
     # Mandatory keys in the input file
     must_keys = {'inputs': ['ref_idi', 'idi_files', 'linants', 'refant', 'exclude_ants', 'exclude_baselines'],
                  'options': ['time_range', 'chanavg', 'timeavg', 'solve_weight', 'to_compute', 'to_apply',
-                             'solve_amp'],
+                             'solve_amp', 'out_gainfile', 'gainfiles'],
                  'config': ['suffix', 'logdir']}
 
     for akey in must_keys:
@@ -370,6 +381,7 @@ if __name__ == '__main__':
     assert os.path.isfile(args['inputs']['ref_idi']), \
            f"The reference FITS-IDI file {args['inputs']['ref_idi']} does not exist or cannot be found."
 
+
     if arguments.compute and arguments.apply:
         args['options']['to_compute'] = True
         args['options']['to_apply'] = True
@@ -380,6 +392,14 @@ if __name__ == '__main__':
         args['options']['to_compute'] = False
         args['options']['to_apply'] = True
 
+    if args['options']['to_compute']:
+        assert isinstance(args['out_gainfile'], str) and args['out_gainfile'].strip() != '', \
+                "The 'out_gainfile' parameter should define a file name (output file to store the computed gains)."
+
+    if args['options']['to_apply']:
+        assert isinstance(args['gainfiles'], list) and len(args['gainfiles']) > 0, \
+                "The 'gainfiles' parameter should define a list of file name (files with the gains to be applied)."
+
     # Ready to go!
     main(ref_idi=args['inputs']['ref_idi'], idi_files=args['inputs']['idi_files'],
          linear_antennas=args['inputs']['linants'], ref_antenna=args['inputs']['refant'],
@@ -389,4 +409,4 @@ if __name__ == '__main__':
          solve_weight=args['options']['solve_weight'], solve_amp=args['options']['solve_amp'],
          to_compute=args['options']['to_compute'], to_apply=args['options']['to_apply'],
          suffix=args['config']['suffix'], logdir=args['config']['logdir'], useRates=args['options']['use_rates'],
-         useDelays=args['options']['use_delays'])
+         useDelays=args['options']['use_delays'], out_gainfile=args['out_gainfile'], gainfiles=args['gainfiles'])
